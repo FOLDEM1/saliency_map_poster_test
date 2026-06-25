@@ -112,6 +112,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-train", action="store_true")
     parser.add_argument("--skip-occlusion", action="store_true")
     parser.add_argument("--skip-visualizations", action="store_true")
+    # Pomija krok oceny wierności map (Insertion/Deletion). Domyślnie krok się wykonuje.
+    parser.add_argument("--skip-faithfulness", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -383,6 +385,46 @@ def analyze_command(profile: Profile, paths: Paths, bo_label: str, output_label:
     ]
 
 
+def faithfulness_command(profile: Profile, paths: Paths) -> list[str]:
+    # Buduje komendę dla src.evaluate_faithfulness — oceny WIERNOŚCI map saliency
+    # metodą Insertion/Deletion. Czyta CSV trzech metod (random/sliding/bo_variable),
+    # buduje z nich mapy jednolicie (rasteryzacja + gęstnienie Voronoi, domyślnie
+    # włączone) i liczy AUC + krzywe.
+    label = profile_name(profile)
+    command = [
+        sys.executable,
+        "-m",
+        "src.evaluate_faithfulness",
+        "--data-root",
+        str(paths.data_root),
+        "--checkpoint",
+        str(paths.checkpoint),
+        "--image-size",
+        str(profile.occ_image_size),
+        "--default-mask-size",
+        str(profile.mask_size),
+        # Trzy metody do porównania (BO bierzemy w wariancie variable_size — najlepsza mapa):
+        "--random-csv",
+        str(paths.occlusion_dir / f"random_{label}.csv"),
+        "--sliding-csv",
+        str(paths.occlusion_dir / f"sliding_{label}.csv"),
+        "--bo-csv",
+        str(paths.occlusion_dir / f"bo_variable_size_{label}.csv"),
+        "--stats-path",
+        str(paths.metrics_dir / "train_channel_stats.json"),
+        # Wyniki: surowe AUC (CSV), agregaty (JSON), uśrednione krzywe (PNG):
+        "--output-csv",
+        str(paths.metrics_dir / f"faithfulness_{label}.csv"),
+        "--summary-json",
+        str(paths.metrics_dir / f"faithfulness_{label}.json"),
+        "--figure",
+        str(paths.figures_dir / f"faithfulness_curves_{label}.png"),
+    ]
+    # Ten sam podzbiór obrazów co reszta okluzji (spójność i niski koszt).
+    add_optional(command, "--max-samples", profile.max_occ_samples)
+    return command
+
+
 def validate_command(profile: Profile, paths: Paths, csv_name: str, expected_seeds: int | None, expected_max_step: int) -> list[str]:
     expected_images = profile.max_occ_samples
     command = [
@@ -512,6 +554,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
         run_command(analyze_command(profile, paths, "bo_fixed_size", "fixed_size"), args.dry_run)
         run_command(analyze_command(profile, paths, "bo_variable_size", "variable_size"), args.dry_run)
+
+        # Ocena wierności map saliency (Insertion/Deletion). Odpinany krok — jedna linijka.
+        if not args.skip_faithfulness:
+            run_command(faithfulness_command(profile, paths), args.dry_run)
 
         if not args.skip_visualizations:
             for command in visualization_commands(profile, paths):
